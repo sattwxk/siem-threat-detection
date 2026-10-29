@@ -1,11 +1,12 @@
-
 import argparse
+import ipaddress
 import json
 import sqlite3
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-DB_PATH = Path("siem.db")
+DB_PATH = Path(__file__).resolve().parent / "siem.db"
 BRUTE_FORCE_THRESHOLD = 5
 WINDOW_MINUTES = 5
 VALID_TYPES = {"failed_login", "successful_login", "privileged_command"}
@@ -54,6 +55,7 @@ def connect_db(db_path=DB_PATH):
 def load_jsonl(path):
     """Read JSONL events and validate required fields."""
     events = []
+    seen = Counter()  # counts identical events so repeats get distinct keys
     with open(path, "r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
@@ -65,12 +67,15 @@ def load_jsonl(path):
                 source_ip = raw.get("source_ip")
                 username = raw.get("username", "unknown")
                 details = raw.get("details", "")
+
                 if event_type not in VALID_TYPES:
                     raise ValueError(f"event_type must be one of {sorted(VALID_TYPES)}")
                 if not isinstance(source_ip, str) or not source_ip.strip():
                     raise ValueError("source_ip must be a non-empty string")
+                ipaddress.ip_address(source_ip.strip())  # raises ValueError if invalid
                 if not isinstance(username, str) or not isinstance(details, str):
                     raise ValueError("username and details must be strings")
+
                 normalized = {
                     "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
                     "event_type": event_type,
@@ -78,99 +83,75 @@ def load_jsonl(path):
                     "username": username.strip() or "unknown",
                     "details": details.strip(),
                 }
-                normalized["event_key"] = json.dumps(normalized, sort_keys=True)
+                base_key = json.dumps(normalized, sort_keys=True)
+                seen[base_key] += 1
+                normalized["event_key"] = f"{base_key}#{seen[base_key]}"
                 events.append(normalized)
             except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 raise ValueError(f"Invalid event on line {line_number}: {exc}") from exc
     return sorted(events, key=lambda event: event["timestamp"])
 
 
+def make_alert(event, severity, rule_name, description):
+    alert = {
+        "timestamp": event["timestamp"],
+        "severity": severity,
+        "rule_name": rule_name,
+        "source_ip": event["source_ip"],
+        "username": event["username"],
+        "description": description,
+    }
+    alert["alert_key"] = json.dumps([
+        rule_name,
+        event["source_ip"],
+        event["username"],
+        event["timestamp"],
+        event["details"],
+    ])
+    return alert
+
 
 def detect_alerts(events):
     """Detect brute force, post-failure success, and privileged commands."""
+    window = timedelta(minutes=WINDOW_MINUTES)
+    parsed = sorted(
+        ((event, parse_timestamp(event["timestamp"])) for event in events),
+        key=lambda pair: pair[1],
+    )
+
+    recent_failures = defaultdict(deque)  # ip -> failure times inside the window
+    last_brute_force = {}                 # ip -> time of the last brute-force alert
     alerts = []
-    parsed = [(event, parse_timestamp(event["timestamp"])) for event in events]
-    parsed.sort(key=lambda pair: pair[1])
 
-    failures = [
-        (event, timestamp)
-        for event, timestamp in parsed
-        if event["event_type"] == "failed_login"
-    ]
+    for event, ts in parsed:
+        ip = event["source_ip"]
+        failures = recent_failures[ip]
+        while failures and ts - failures[0] >= window:
+            failures.popleft()
 
-    for event, timestamp in parsed:
         if event["event_type"] == "failed_login":
-            matching = [
-                failed_event
-                for failed_event, failed_time in failures
-                if failed_event["source_ip"] == event["source_ip"]
-                and timestamp - timedelta(minutes=WINDOW_MINUTES)
-                < failed_time <= timestamp
-            ]
-
-            if len(matching) == BRUTE_FORCE_THRESHOLD:
-                alert = {
-                    "timestamp": event["timestamp"],
-                    "severity": "High",
-                    "rule_name": "Possible Brute-Force Login",
-                    "source_ip": event["source_ip"],
-                    "username": event["username"],
-                    "description": (
-                        f"{len(matching)} failed logins from "
-                        f"{event['source_ip']} within {WINDOW_MINUTES} minutes."
-                    ),
-                }
-                alert["alert_key"] = json.dumps(
-                    [alert["rule_name"], alert["source_ip"], alert["timestamp"]],
-                    sort_keys=True,
-                )
-                alerts.append(alert)
+            failures.append(ts)
+            quiet = ip not in last_brute_force or ts - last_brute_force[ip] >= window
+            if len(failures) >= BRUTE_FORCE_THRESHOLD and quiet:
+                last_brute_force[ip] = ts
+                alerts.append(make_alert(
+                    event, "High", "Possible Brute-Force Login",
+                    f"{len(failures)} failed logins from {ip} within {WINDOW_MINUTES} minutes.",
+                ))
 
         elif event["event_type"] == "successful_login":
-            previous_failures = [
-                failed_event
-                for failed_event, failed_time in failures
-                if failed_event["source_ip"] == event["source_ip"]
-                and timestamp - timedelta(minutes=WINDOW_MINUTES)
-                < failed_time < timestamp
-            ]
-
-            if len(previous_failures) >= BRUTE_FORCE_THRESHOLD:
-                alert = {
-                    "timestamp": event["timestamp"],
-                    "severity": "High",
-                    "rule_name": "Success After Repeated Failures",
-                    "source_ip": event["source_ip"],
-                    "username": event["username"],
-                    "description": (
-                        f"Successful login from {event['source_ip']} after "
-                        f"{len(previous_failures)} failures in the preceding "
-                        f"{WINDOW_MINUTES} minutes."
-                    ),
-                }
-                alert["alert_key"] = json.dumps(
-                    [alert["rule_name"], alert["source_ip"], alert["timestamp"]],
-                    sort_keys=True,
-                )
-                alerts.append(alert)
+            if len(failures) >= BRUTE_FORCE_THRESHOLD:
+                alerts.append(make_alert(
+                    event, "High", "Success After Repeated Failures",
+                    f"Successful login from {ip} after {len(failures)} failures "
+                    f"in the preceding {WINDOW_MINUTES} minutes.",
+                ))
 
         elif event["event_type"] == "privileged_command":
-            alert = {
-                "timestamp": event["timestamp"],
-                "severity": "Medium",
-                "rule_name": "Privileged Command Observed",
-                "source_ip": event["source_ip"],
-                "username": event["username"],
-                "description": (
-                    f"Review privileged activity: "
-                    f"{event['details'] or 'No details provided'}"
-                ),
-            }
-            alert["alert_key"] = json.dumps(
-                [alert["rule_name"], alert["source_ip"], alert["timestamp"]],
-                sort_keys=True,
-            )
-            alerts.append(alert)
+            alerts.append(make_alert(
+                event, "Medium", "Privileged Command Observed",
+                f"Review privileged activity: {event['details'] or 'No details provided'}",
+            ))
 
     return alerts
 
@@ -179,7 +160,6 @@ def ingest_file(path, db_path=DB_PATH):
     events = load_jsonl(path)
     inserted_events = 0
     inserted_alerts = 0
-
     connection = connect_db(db_path)
     try:
         with connection:
@@ -200,21 +180,9 @@ def ingest_file(path, db_path=DB_PATH):
                 FROM events
                 ORDER BY timestamp
             """).fetchall()
+            all_events = [dict(row) for row in rows]
 
-            all_events = []
-            for row in rows:
-                all_events.append({
-                    "timestamp": row["timestamp"],
-                    "event_type": row["event_type"],
-                    "source_ip": row["source_ip"],
-                    "username": row["username"],
-                    "details": row["details"],
-                    "event_key": row["event_key"],
-                })
-
-            alerts = detect_alerts(all_events)
-
-            for alert in alerts:
+            for alert in detect_alerts(all_events):
                 cursor = connection.execute("""
                     INSERT OR IGNORE INTO alerts
                     (timestamp, severity, rule_name, source_ip, username, description, alert_key)
@@ -225,10 +193,8 @@ def ingest_file(path, db_path=DB_PATH):
                     alert["alert_key"]
                 ))
                 inserted_alerts += cursor.rowcount
-
     finally:
         connection.close()
-
     return inserted_events, inserted_alerts
 
 
