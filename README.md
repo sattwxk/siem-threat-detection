@@ -11,6 +11,8 @@ A beginner-friendly, defensive Security Information and Event Management (SIEM) 
 - Provides a Streamlit dashboard with filters and CSV export.
 - Includes synthetic demo events and unit tests.
 
+
+
 > **Scope:** This is a learning prototype, not a production SIEM. The included data is synthetic. Only collect or analyze logs from systems you own or are authorized to monitor.
 
 ## Requirements
