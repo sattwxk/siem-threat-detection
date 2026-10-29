@@ -7,3 +7,7 @@ __pycache__/
 .streamlit/secrets.toml
 .env
 .DS_Store
+siem.db
+siem.db-shm
+siem.db-wal
+sample_logs/real_ssh_events.jsonl
