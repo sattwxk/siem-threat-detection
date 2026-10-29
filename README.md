@@ -12,6 +12,16 @@ A beginner-friendly, defensive Security Information and Event Management (SIEM) 
 - Includes synthetic demo events and unit tests.
 
 
+## Dashboard Preview
+
+The dashboard provides a view of authentication events and detected security alerts.
+
+### Dashboard Overview
+![Mini SIEM Dashboard](screenshots/dashboard.png)
+
+### Alerts and Events
+![Mini SIEM Alerts View](screenshots/dashboard%202.png)
+
 
 > **Scope:** This is a learning prototype, not a production SIEM. The included data is synthetic. Only collect or analyze logs from systems you own or are authorized to monitor.
 
