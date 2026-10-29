@@ -1,4 +1,4 @@
-# Mini SIEM & Threat Detection Lab
+# SIEM & Threat Detection Lab
 
 A beginner-friendly, defensive Security Information and Event Management (SIEM) portfolio project.
 
