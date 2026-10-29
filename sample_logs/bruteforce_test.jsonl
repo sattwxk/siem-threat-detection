@@ -1,0 +1,5 @@
+{"timestamp":"2026-10-29T12:00:00Z","event_type":"failed_login","source_ip":"198.51.100.77","username":"testuser","details":"Synthetic SIEM detection test 1"}
+{"timestamp":"2026-10-29T12:00:30Z","event_type":"failed_login","source_ip":"198.51.100.77","username":"testuser","details":"Synthetic SIEM detection test 2"}
+{"timestamp":"2026-10-29T12:01:00Z","event_type":"failed_login","source_ip":"198.51.100.77","username":"testuser","details":"Synthetic SIEM detection test 3"}
+{"timestamp":"2026-10-29T12:01:30Z","event_type":"failed_login","source_ip":"198.51.100.77","username":"testuser","details":"Synthetic SIEM detection test 4"}
+{"timestamp":"2026-10-29T12:02:00Z","event_type":"failed_login","source_ip":"198.51.100.77","username":"testuser","details":"Synthetic SIEM detection test 5"}
