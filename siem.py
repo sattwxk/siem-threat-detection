@@ -85,23 +85,29 @@ def load_jsonl(path):
     return sorted(events, key=lambda event: event["timestamp"])
 
 
-def detect_alerts(events):
-    """Return alert dictionaries for brute force, post-failure success, and privileged commands."""
-    alerts = []
-    parsed = [
-        (event, parse_timestamp(event["timestamp"]))
-        for event in events
-    ]
-    failures = [pair for pair in parsed if pair[0]["event_type"] == "failed_login"]
 
-    # For each event, examine only failures from the same IP in the preceding rolling window.
+def detect_alerts(events):
+    """Detect brute force, post-failure success, and privileged commands."""
+    alerts = []
+    parsed = [(event, parse_timestamp(event["timestamp"])) for event in events]
+    parsed.sort(key=lambda pair: pair[1])
+
+    failures = [
+        (event, timestamp)
+        for event, timestamp in parsed
+        if event["event_type"] == "failed_login"
+    ]
+
     for event, timestamp in parsed:
         if event["event_type"] == "failed_login":
             matching = [
-                failed_event for failed_event, failed_time in failures
+                failed_event
+                for failed_event, failed_time in failures
                 if failed_event["source_ip"] == event["source_ip"]
-                and timestamp - timedelta(minutes=WINDOW_MINUTES) < failed_time <= timestamp
+                and timestamp - timedelta(minutes=WINDOW_MINUTES)
+                < failed_time <= timestamp
             ]
+
             if len(matching) == BRUTE_FORCE_THRESHOLD:
                 alert = {
                     "timestamp": event["timestamp"],
@@ -110,21 +116,25 @@ def detect_alerts(events):
                     "source_ip": event["source_ip"],
                     "username": event["username"],
                     "description": (
-                        f"{len(matching)} failed logins from {event['source_ip']} "
-                        f"within {WINDOW_MINUTES} minutes."
+                        f"{len(matching)} failed logins from "
+                        f"{event['source_ip']} within {WINDOW_MINUTES} minutes."
                     ),
                 }
                 alert["alert_key"] = json.dumps(
-                    [alert["rule_name"], alert["source_ip"], alert["timestamp"]], sort_keys=True
+                    [alert["rule_name"], alert["source_ip"], alert["timestamp"]],
+                    sort_keys=True,
                 )
                 alerts.append(alert)
 
         elif event["event_type"] == "successful_login":
             previous_failures = [
-                failed_event for failed_event, failed_time in failures
+                failed_event
+                for failed_event, failed_time in failures
                 if failed_event["source_ip"] == event["source_ip"]
-                and timestamp - timedelta(minutes=WINDOW_MINUTES) < failed_time < timestamp
+                and timestamp - timedelta(minutes=WINDOW_MINUTES)
+                < failed_time < timestamp
             ]
+
             if len(previous_failures) >= BRUTE_FORCE_THRESHOLD:
                 alert = {
                     "timestamp": event["timestamp"],
@@ -134,11 +144,13 @@ def detect_alerts(events):
                     "username": event["username"],
                     "description": (
                         f"Successful login from {event['source_ip']} after "
-                        f"{len(previous_failures)} failures in the preceding {WINDOW_MINUTES} minutes."
+                        f"{len(previous_failures)} failures in the preceding "
+                        f"{WINDOW_MINUTES} minutes."
                     ),
                 }
                 alert["alert_key"] = json.dumps(
-                    [alert["rule_name"], alert["source_ip"], alert["timestamp"]], sort_keys=True
+                    [alert["rule_name"], alert["source_ip"], alert["timestamp"]],
+                    sort_keys=True,
                 )
                 alerts.append(alert)
 
@@ -149,19 +161,22 @@ def detect_alerts(events):
                 "rule_name": "Privileged Command Observed",
                 "source_ip": event["source_ip"],
                 "username": event["username"],
-                "description": f"Review privileged activity: {event['details'] or 'No details provided'}",
+                "description": (
+                    f"Review privileged activity: "
+                    f"{event['details'] or 'No details provided'}"
+                ),
             }
             alert["alert_key"] = json.dumps(
-                [alert["rule_name"], alert["source_ip"], alert["timestamp"]], sort_keys=True
+                [alert["rule_name"], alert["source_ip"], alert["timestamp"]],
+                sort_keys=True,
             )
             alerts.append(alert)
-    return alerts
 
+    return alerts
 
 
 def ingest_file(path, db_path=DB_PATH):
     events = load_jsonl(path)
-    alerts = detect_alerts(events)
     inserted_events = 0
     inserted_alerts = 0
 
@@ -179,6 +194,26 @@ def ingest_file(path, db_path=DB_PATH):
                 ))
                 inserted_events += cursor.rowcount
 
+            # Run detection against all stored events, including older imports.
+            rows = connection.execute("""
+                SELECT timestamp, event_type, source_ip, username, details, event_key
+                FROM events
+                ORDER BY timestamp
+            """).fetchall()
+
+            all_events = []
+            for row in rows:
+                all_events.append({
+                    "timestamp": row["timestamp"],
+                    "event_type": row["event_type"],
+                    "source_ip": row["source_ip"],
+                    "username": row["username"],
+                    "details": row["details"],
+                    "event_key": row["event_key"],
+                })
+
+            alerts = detect_alerts(all_events)
+
             for alert in alerts:
                 cursor = connection.execute("""
                     INSERT OR IGNORE INTO alerts
@@ -190,11 +225,11 @@ def ingest_file(path, db_path=DB_PATH):
                     alert["alert_key"]
                 ))
                 inserted_alerts += cursor.rowcount
+
     finally:
         connection.close()
 
     return inserted_events, inserted_alerts
-
 
 
 def main():
