@@ -109,3 +109,25 @@ Alerts are deduplicated by detection type, source IP, and time window to avoid r
 - Add alert acknowledgement and case notes.
 - Add automated tests for malformed events and time boundaries.
 - Add Docker support and GitHub Actions CI.
+
+## Testing
+
+The project includes 13 regression tests covering detection accuracy, event validation, time-window boundaries, duplicate ingestion, and alert deduplication.
+
+### Run the tests
+
+```bash
+python -m pip install pytest
+python -m pytest -v
+```
+
+### Test coverage
+
+- Brute-force detection after five failed logins
+- Five-minute time-window boundaries
+- Separation of events by source IP
+- Successful login following repeated failures
+- Duplicate event ingestion and alert deduplication
+- Invalid IP address and missing timezone validation
+- Privileged command detection
+- Sustained attacks and same-second event bursts
